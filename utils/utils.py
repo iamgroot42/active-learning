@@ -56,76 +56,6 @@ class Logger(object):
     self.log.flush()
 
 
-def create_checker_unbalanced(split, n, grid_size):
-  """Creates a dataset with two classes that occupy one color of checkboard.
-
-  Args:
-    split: splits to use for class imbalance.
-    n: number of datapoints to sample.
-    grid_size: checkerboard size.
-  Returns:
-    X: 2d features.
-    y: binary class.
-  """
-  y = np.zeros(0)
-  X = np.zeros((0, 2))
-  for i in range(grid_size):
-    for j in range(grid_size):
-      label = 0
-      n_0 = int(n/(grid_size*grid_size) * split[0] * 2)
-      if (i-j) % 2 == 0:
-        label = 1
-        n_0 = int(n/(grid_size*grid_size) * split[1] * 2)
-      x_1 = np.random.uniform(i, i+1, n_0)
-      x_2 = np.random.uniform(j, j+1, n_0)
-      x = np.vstack((x_1, x_2))
-      x = x.T
-      X = np.concatenate((X, x))
-      y_0 = label * np.ones(n_0)
-      y = np.concatenate((y, y_0))
-  return X, y
-
-
-def flatten_X(X):
-  shape = X.shape
-  flat_X = X
-  if len(shape) > 2:
-    flat_X = np.reshape(X, (shape[0], np.product(shape[1:])))
-  return flat_X
-
-
-def get_mldata(data_dir, name):
-  """Loads data from data_dir.
-
-  Looks for the file in data_dir.
-  Assumes that data is in pickle format with dictionary fields data and target.
-
-
-  Args:
-    data_dir: directory to look in
-    name: dataset name, assumes data is saved in the save_dir with filename
-      <name>.pkl
-  Returns:
-    data and targets
-  Raises:
-    NameError: dataset not found in data folder.
-  """
-  dataname = name
-  if dataname == "checkerboard":
-    X, y = create_checker_unbalanced(split=[1./5, 4./5], n=10000, grid_size=4)
-  else:
-    filename = os.path.join(data_dir, dataname + ".pkl")
-    if not gfile.Exists(filename):
-      raise NameError("ERROR: dataset not available")
-    data = pickle.load(gfile.GFile(filename, "r"))
-    X = data["data"]
-    y = data["target"]
-    if "keras" in dataname:
-      X = X / 255
-      y = y.flatten()
-  return X, y
-
-
 def filter_data(X, y, keep=None):
   """Filters data by class indicated in keep.
 
@@ -200,41 +130,19 @@ def flip_label(y, percent_random):
   return y
 
 
-def get_model(method, seed=13):
+def get_model(seed=13):
   """Construct sklearn model using either logistic regression or linear svm.
 
   Wraps grid search on regularization parameter over either logistic regression
   or svm, returns constructed model
 
   Args:
-    method: string indicating scikit method to use, currently accepts logistic
-      and linear svm.
     seed: int or rng to use for random state fed to scikit method
 
   Returns:
     scikit learn model
   """
-  # TODO(lishal): extend to include any scikit model that implements
-  #   a decision function.
-  # TODO(lishal): for kernel methods, currently using default value for gamma
-  # but should probably tune.
-  if method == "logistic":
-    model = LogisticRegression(random_state=seed, multi_class="multinomial",
-                               solver="lbfgs", max_iter=200)
-    params = {"C": [10.0**(i) for i in range(-4, 5)]}
-  elif method == "logistic_ovr":
-    model = LogisticRegression(random_state=seed)
-    params = {"C": [10.0**(i) for i in range(-5, 4)]}
-  elif method == "linear_svm":
-    model = LinearSVC(random_state=seed)
-    params = {"C": [10.0**(i) for i in range(-4, 5)]}
-  elif method == "kernel_svm":
-    model = SVC(random_state=seed)
-    params = {"C": [10.0**(i) for i in range(-4, 5)]}
-  elif method == "kernel_ls":
-    model = BlockKernelSolver(random_state=seed)
-    params = {"C": [10.0**(i) for i in range(-6, 1)]}
-  elif method == "small_cnn":
+  if method == "small_cnn":
     # Model does not work with weighted_expert or simulate_batch
     model = SmallCNN(random_state=seed)
     return model
@@ -275,22 +183,19 @@ def calculate_entropy(batch_size, y_s):
   return entropy
 
 
-def get_train_val_test_splits(X, y, max_points, seed, confusion, seed_batch,
+def get_train_val_test_splits(X, y, seed, confusion, seed_batch,
                               split=(2./3, 1./6, 1./6)):
   """Return training, validation, and test splits for X and y.
 
   Args:
     X: features
     y: targets
-    max_points: # of points to use when creating splits.
     seed: seed for shuffling.
     confusion: labeling noise to introduce.  0.1 means randomize 10% of labels.
     seed_batch: # of initial datapoints to ensure sufficient class membership.
     split: percent splits for train, val, and test.
   Returns:
-    indices: shuffled indices to recreate splits given original input data X.
-    y_noise: y with noise injected, needed to reproduce results outside of
-      run_experiments using original data.
+    splits of data
   """
   np.random.seed(seed)
   X_copy = copy.copy(X)
@@ -301,12 +206,8 @@ def get_train_val_test_splits(X, y, max_points, seed, confusion, seed_batch,
 
   indices = np.arange(len(y))
 
-  if max_points is None:
-    max_points = len(y_noise)
-  else:
-    max_points = min(len(y_noise), max_points)
-  train_split = int(max_points * split[0])
-  val_split = train_split + int(max_points * split[1])
+  train_split = int(len(y_noise) * split[0])
+  val_split = train_split + int(len(y_noise) * split[1])
   assert seed_batch <= train_split
 
   # Do this to make sure that the initial batch has examples from all classes
@@ -323,14 +224,13 @@ def get_train_val_test_splits(X, y, max_points, seed, confusion, seed_batch,
 
   X_train = X_copy[indices[0:train_split]]
   X_val = X_copy[indices[train_split:val_split]]
-  X_test = X_copy[indices[val_split:max_points]]
+  X_test = X_copy[indices[val_split:len(y_noise)]]
   y_train = y_noise[indices[0:train_split]]
   y_val = y_noise[indices[train_split:val_split]]
-  y_test = y_noise[indices[val_split:max_points]]
+  y_test = y_noise[indices[val_split:len(y_noise)]]
   # Make sure that we have enough observations of each class for 2-fold cv
   assert all(get_class_counts(y_noise, y_train[0:seed_batch]) >= 4)
   # Make sure that returned shuffled indices are correct
-  assert all(y_noise[indices[0:max_points]] ==
+  assert all(y_noise[indices[0:len(y_noise)]] ==
              np.concatenate((y_train, y_val, y_test), axis=0))
-  return (indices[0:max_points], X_train, y_train,
-          X_val, y_val, X_test, y_test, y_noise)
+  return (X_train, y_train, X_val, y_val, X_test, y_test)
