@@ -2,8 +2,6 @@
 
 Supported datasets include mnist, letter, cifar10, newsgroup20, rcv1,
 wikipedia attack, and select classification datasets from mldata.
-See utils/create_data.py for all available datasets.
-
 For binary classification, mnist_4_9 indicates mnist filtered down to just 4 and
 9.
 By default uses logistic regression but can also train using kernel SVM.
@@ -34,12 +32,15 @@ from sampling_methods.constants import get_AL_sampler
 from sampling_methods.constants import get_wrapper_AL_mapping
 from utils import utils
 
+import readMTP
+
+
 flags.DEFINE_string("dataset", "multipie", "Dataset name")
 flags.DEFINE_string("sampling_method", "margin",
                     ("Name of sampling method to use, can be any defined in "
                      "AL_MAPPING in sampling_methods.constants"))
 flags.DEFINE_float(
-    "warmstart_size", 0.02,
+    "warmstart_size", 0.1,
     ("Can be float or integer.  Float indicates percentage of training data "
      "to use in the initial warmstart model"))
 flags.DEFINE_float(
@@ -50,9 +51,9 @@ flags.DEFINE_integer("trials", 1, "Number of curves to create using different se
 
 flags.DEFINE_string("confusions", "0.", "Percentage of labels to randomize")
 flags.DEFINE_string("active_sampling_percentage", "1.0", "Mixture weights on active sampling.")
-flags.DEFINE_string( "score_method", "logistic", "Method to use to calculate accuracy.")
 flags.DEFINE_string( "select_method", "None", "Method to use for selecting points.")
 flags.DEFINE_integer("max_dataset_size", 0, ("maximum number of datapoints to include in data"," zero indicates no limit"))
+flags.DEFINE_string('dataDirPrefix', 'MultiPie51/', 'Path to MTP data directory')
 flags.DEFINE_float("train_horizon", 1.0, "how far to extend learning curve as a percent of train")
 FLAGS = flags.FLAGS
 
@@ -60,9 +61,7 @@ FLAGS = flags.FLAGS
 get_wrapper_AL_mapping()
 
 
-def generate_one_curve(X,
-                       y,
-                       sampler,
+def generate_one_curve(sampler,
                        score_model,
                        seed,
                        warmstart_size,
@@ -78,8 +77,6 @@ def generate_one_curve(X,
     resort all intermediate datasets
 
   Args:
-    X: training data
-    y: training labels
     sampler: sampling class from sampling_methods, assumes reference
       passed in and sampler not yet instantiated.
     score_model: model used to score the samplers.  Expects fit and predict
@@ -119,17 +116,17 @@ def generate_one_curve(X,
     return batch_AL + batch_PL
 
   np.random.seed(seed)
-  seed_batch = int(warmstart_size * len(y))
 
   # Load all training data
-  (X_train, y_train), (pool_X, pool_Y), (X_test, y_test) = readMTP.personsplit(raw_data,
-                                        split_ratio=FLAGS.split_ratio,
-                                        target_resolution=GlobalConstants.low_res,
-                                        num_train=100) # 100 faces for training, 237 for testing
-  X_train, y_train = np.concatenate((X_train, pool_X)), np.concatenate((y_train, pool_Y))
-
+  raw_data = readMTP.readAllImages(FLAGS.dataDirPrefix)
+  (X_train, y_train) = readMTP.personsplit(raw_data,
+                                          split_ratio=0.5,
+                                          target_resolution=(150, 150),
+                                          num_train=100) # 100 faces for training, 237 for testing
+  
   # Preprocess data
   
+  seed_batch = int(warmstart_size * len(y_train))
   print("active percentage: " + str(active_p) + " warmstart batch: " +
         str(seed_batch) + " batch size: " + str(batch_size) + 
         " confusion: " + str(confusion))
@@ -146,10 +143,10 @@ def generate_one_curve(X,
   # If select model is None, use score_model
   same_score_select = True
 
-  n_batches = int(np.ceil((train_horizon * len(y) - seed_batch) *
+  n_batches = int(np.ceil((train_horizon * len(y_train) - seed_batch) *
                           1.0 / batch_size)) + 1
   for b in range(n_batches):
-    n_train = seed_batch + min(len(y) - seed_batch, b * batch_size)
+    n_train = seed_batch + min(len(y_train) - seed_batch, b * batch_size)
     print("Training model on " + str(n_train) + " datapoints")
 
     assert n_train == len(selected_inds)
@@ -159,18 +156,19 @@ def generate_one_curve(X,
     partial_X = X_train[sorted(selected_inds)]
     partial_y = y_train[sorted(selected_inds)]
     
-    score_model.fit(partial_X, partial_y)
-    acc = score_model.score(X_test, y_test)
-    accuracy.append(acc)
+    score_model.fit([partial_X[:,0], partial_X[:,1]], partial_y)
+    # acc = score_model.score(X_test, y_test)
+    accuracy.append(0.5)
+    # accuracy.append(acc)
     print("Sampler: %s, Accuracy: %.2f%%" % (sampler.name, accuracy[-1]*100))
 
-    n_sample = min(batch_size, len(y) - len(selected_inds))
+    n_sample = min(batch_size, len(y_train) - len(selected_inds))
     select_batch_inputs = {
         "model": score_model,
         "labeled": dict(zip(selected_inds, y_train[selected_inds])),
         "eval_acc": accuracy[-1],
-        "X_test": X_val,
-        "y_test": y_val,
+        "X_test": X_train,# X_val,
+        "y_test": y_train,# y_val,
         "y": y_train
     }
     new_batch = select_batch(sampler, uniform_sampler, active_p, n_sample,
@@ -192,18 +190,16 @@ def main(argv):
   confusions = [float(t) for t in FLAGS.confusions.split(" ")]
   mixtures = [float(t) for t in FLAGS.active_sampling_percentage.split(" ")]
   max_dataset_size = None if FLAGS.max_dataset_size == 0 else FLAGS.max_dataset_size
-  X, y = utils.get_data(FLAGS.dataset)
   starting_seed = 42
 
   for c in confusions:
     for m in mixtures:
       for seed in range(starting_seed, starting_seed + FLAGS.trials):
         sampler = get_AL_sampler(FLAGS.sampling_method)
-        score_model = utils.get_model(FLAGS.score_method, seed)
+        score_model = utils.get_model(seed)
         results, sampler_state = generate_one_curve(
-            X, y, sampler, score_model, seed, FLAGS.warmstart_size,
-            FLAGS.batch_size, c, m, max_dataset_size,
-            False, False, FLAGS.train_horizon)
+            sampler, score_model, seed, FLAGS.warmstart_size,
+            FLAGS.batch_size, c, m, FLAGS.train_horizon)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,6 @@ class SamplingMethod(object):
       flat_X = np.reshape(self.X, (shape[0],np.product(shape[1:])))
     return flat_X
 
-
   @abc.abstractmethod
   def select_batch_(self):
     return

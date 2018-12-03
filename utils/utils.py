@@ -142,19 +142,12 @@ def get_model(seed=13):
   Returns:
     scikit learn model
   """
-  if method == "small_cnn":
-    # Model does not work with weighted_expert or simulate_batch
-    model = SmallCNN(random_state=seed)
-    return model
-  elif method == "allconv":
-    # Model does not work with weighted_expert or simulate_batch
-    model = AllConv(random_state=seed)
-    return model
+  # Model does not work with weighted_expert or simulate_batch
+  model = SmallCNN(random_state=seed)
 
-  else:
-    raise NotImplementedError("ERROR: " + method + " not implemented")
-
-  model = GridSearchCV(model, params, cv=3)
+  # Wrap GridCV Search
+  params = {}
+  # model = GridSearchCV(model, params, cv=3)
   return model
 
 

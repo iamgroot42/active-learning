@@ -28,6 +28,9 @@ from keras.layers import Dropout
 from keras.layers import Flatten
 from keras.layers import MaxPooling2D
 from keras.models import Sequential
+from keras.engine import  Model
+from keras.layers import Input, Lambda
+from keras import backend as K
 
 import numpy as np
 import tensorflow as tf
@@ -61,36 +64,45 @@ class SmallCNN(object):
     self.decode_map = None
     self.model = None
     self.random_state = random_state
-    self.n_classes = None
+    self.n_classes = 1
 
-  def build_model(self, X):
+  def build_model(self):
     # assumes that data axis order is same as the backend
-    input_shape = X.shape[1:]
+    input_shape = (150, 150, 3)
     np.random.seed(self.random_state)
     tf.set_random_seed(self.random_state)
 
-    model = Sequential()
-    model.add(Conv2D(32, (3, 3), padding='same',
-                     input_shape=input_shape, name='conv1'))
-    model.add(Activation('relu'))
-    model.add(Conv2D(32, (3, 3), name='conv2'))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.25))
+    convnet = Sequential()
+    convnet.add(Conv2D(32, (3, 3), padding='same',
+          input_shape=input_shape))
+    convnet.add(Activation('relu'))
+    convnet.add(Conv2D(32, (3, 3)))
+    convnet.add(Activation('relu'))
+    convnet.add(MaxPooling2D(pool_size=(2, 2)))
+    convnet.add(Dropout(0.25))
 
-    model.add(Conv2D(64, (3, 3), padding='same', name='conv3'))
-    model.add(Activation('relu'))
-    model.add(Conv2D(64, (3, 3), name='conv4'))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.25))
+    convnet.add(Conv2D(64, (3, 3), padding='same'))
+    convnet.add(Activation('relu'))
+    convnet.add(Conv2D(64, (3, 3)))
+    convnet.add(Activation('relu'))
+    convnet.add(MaxPooling2D(pool_size=(2, 2)))
+    convnet.add(Dropout(0.25))
 
-    model.add(Flatten())
-    model.add(Dense(512, name='dense1'))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(self.n_classes, name='dense2'))
-    model.add(Activation('softmax'))
+    convnet.add(Flatten())
+    convnet.add(Dense(128))
+    convnet.add(Activation('relu'))
+
+    left_input = Input(input_shape)
+    right_input = Input(input_shape)
+    encoded_l = convnet(left_input)
+    encoded_r = convnet(right_input)
+   
+    L1_layer = Lambda(lambda tensors:K.abs(tensors[0] - tensors[1]))
+    L1_distance = L1_layer([encoded_l, encoded_r])
+    hidden = Dense(512, activation='relu')(L1_distance)
+    hidden2 = Dense(64, activation='relu')(hidden)
+    prediction = Dense(1, activation='sigmoid')(hidden2)
+    model = Model(inputs=[left_input, right_input], outputs=prediction)
 
     try:
       optimizer = getattr(keras.optimizers, self.solver)
@@ -102,7 +114,7 @@ class SmallCNN(object):
     except:
       opt = optimizer(lr=self.learning_rate, schedule_decay=self.lr_decay)
 
-    model.compile(loss='categorical_crossentropy',
+    model.compile(loss='binary_crossentropy',
                   optimizer=opt,
                   metrics=['accuracy'])
     # Save initial weights so that model can be retrained with same
@@ -113,20 +125,14 @@ class SmallCNN(object):
 
   def create_y_mat(self, y):
     y_encode = self.encode_y(y)
-    y_encode = np.reshape(y_encode, (len(y_encode), 1))
-    y_mat = keras.utils.to_categorical(y_encode, self.n_classes)
-    return y_mat
+    # y_encode = np.reshape(y_encode, (len(y_encode), 1))
+    # y_mat = keras.utils.to_categorical(y_encode, self.n_classes)
+    # return y_mat
+    return y_encode
 
   # Add handling for classes that do not start counting from 0
   def encode_y(self, y):
-    if self.encode_map is None:
-      self.classes_ = sorted(list(set(y)))
-      self.n_classes = len(self.classes_)
-      self.encode_map = dict(zip(self.classes_, range(len(self.classes_))))
-      self.decode_map = dict(zip(range(len(self.classes_)), self.classes_))
-    mapper = lambda x: self.encode_map[x]
-    transformed_y = np.array(map(mapper, y))
-    return transformed_y
+    return y
 
   def decode_y(self, y):
     mapper = lambda x: self.decode_map[x]
@@ -137,7 +143,7 @@ class SmallCNN(object):
     y_mat = self.create_y_mat(y_train)
 
     if self.model is None:
-      self.build_model(X_train)
+      self.build_model()
 
     # We don't want incremental fit so reset learning rate and weights
     K.set_value(self.model.optimizer.lr, self.learning_rate)
@@ -154,6 +160,9 @@ class SmallCNN(object):
   def predict(self, X_val):
     predicted = self.model.predict(X_val)
     return predicted
+
+  def predict_proba(self, X_val):
+    return self.predict(X_val)
 
   def score(self, X_val, val_y):
     y_mat = self.create_y_mat(val_y)
